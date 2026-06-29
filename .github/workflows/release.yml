@@ -1,15 +1,10 @@
 name: Release
 
 # Manual-only: cutting a release is "run this with a version number." The
-# version bump happens on a fresh release/* branch off main, not a direct
-# push to main - that branch is what actually gets tagged and released (so
-# the release isn't blocked on anything), and a PR back into main is opened
-# and auto-merged so main ends up with the same version bump. Auto-merge
-# (rather than an immediate merge) means this keeps working unchanged if
-# branch protection is ever added later - it'll just wait for whatever's
-# required instead of failing outright. Requires "Allow auto-merge" enabled
-# in the repo's settings (Settings -> General -> Pull Requests) - a one-time
-# setup step, not something this file can turn on by itself.
+# version bump happens on a fresh release/* branch off main (so the release
+# itself isn't blocked on anything), which is then merged straight into main
+# and deleted. No PR step - if branch protection gets added to main later,
+# this direct push/merge will need revisiting then.
 on:
   workflow_dispatch:
     inputs:
@@ -19,7 +14,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   build-and-release:
@@ -51,6 +45,11 @@ jobs:
       - name: Syntax-check sources
         run: node --check bin/bob-openai-server.mjs && for f in src/*.mjs; do node --check "$f"; done
 
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Create release branch
         run: git checkout -b "release/v${{ inputs.version }}"
 
@@ -59,8 +58,6 @@ jobs:
 
       - name: Commit and push version bump
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json
           git commit -m "Release v${{ inputs.version }}"
           git push origin "release/v${{ inputs.version }}"
@@ -72,8 +69,6 @@ jobs:
       - name: Pack tarball
         run: npm pack
 
-      # Tags/releases the release branch's HEAD directly - this does not
-      # wait for the PR below to be reviewed or merged.
       - name: Create release (and tag) and upload tarball
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -83,18 +78,11 @@ jobs:
             --target "$(git rev-parse HEAD)" \
             --generate-notes
 
-      - name: Open PR to bring the version bump back into main
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge release branch into main
         run: |
-          gh pr create \
-            --base main \
-            --head "release/v${{ inputs.version }}" \
-            --title "Release v${{ inputs.version }}" \
-            --body "Version bump for the v${{ inputs.version }} release (already tagged and published - this PR just brings package.json on main back in sync)."
+          git checkout main
+          git merge --ff-only "release/v${{ inputs.version }}"
+          git push origin main
 
-      - name: Auto-merge the release PR into main
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr merge "release/v${{ inputs.version }}" --merge --auto --delete-branch
+      - name: Delete release branch
+        run: git push origin --delete "release/v${{ inputs.version }}"
