@@ -1,0 +1,21 @@
+{
+  "name": "bob-openai-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Exposes IBM Bob Shell's real model backend as a standard OpenAI-compatible API.",
+  "type": "module",
+  "bin": {
+    "bob-openai-server": "bin/bob-openai-server.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node bin/bob-openai-server.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
