@@ -1,6 +1,6 @@
 {
   "name": "bob-openai-server",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "private": true,
   "description": "Exposes IBM Bob Shell's real model backend as a standard OpenAI-compatible API.",
   "type": "module",
