@@ -1,12 +1,17 @@
 import { Readable } from "node:stream";
 
-// GET {baseUrl}/inference/v1/model/info is the real, authoritative model
-// catalog for this account - the same endpoint Bob's own CLI calls
-// internally for an SSO-authenticated session (isAuthnBackend() routes
-// getLiteLLMModels() to this exact path). The OpenRouter-shaped /v1/models
-// and the non-/inference-prefixed /v1/model/info both 403 - only this one
-// works. Cached briefly so a burst of /v1/models calls doesn't re-fetch
-// every time, but short enough that entitlement changes show up promptly.
+// The real backend speaks standard OpenAI-shaped endpoints, just under
+// /inference/v1/* instead of /v1/*. So callers hit this server's /v1/*,
+// and (almost) everything is forwarded as-is to {baseUrl}/inference/v1/*
+// with the right auth headers attached - no per-endpoint code needed for
+// anything the backend already supports (chat/completions, model/info,
+// whatever else shows up later).
+//
+// /v1/models is the one deliberate exception: it doesn't exist upstream
+// at all (the real catalog is at /model/info, under a LiteLLM-specific
+// shape: model_name/model_info/litellm_params, not the OpenAI
+// {id,object,owned_by} list shape some clients expect), so it gets
+// translated instead of forwarded.
 const MODEL_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
 let modelListCache = null; // { models, expiresAt }
 
@@ -28,7 +33,9 @@ const HOP_BY_HOP_HEADERS = new Set([
 
 export function createRequestHandler(config, broker) {
   return async function handleRequest(req, res) {
-    if (req.url === "/healthz") {
+    const { pathname, search } = new URL(req.url, "http://localhost");
+
+    if (pathname === "/healthz") {
       res.writeHead(200, { "content-type": "text/plain" });
       res.end("ok");
       return;
@@ -41,12 +48,12 @@ export function createRequestHandler(config, broker) {
     }
 
     try {
-      if (req.method === "GET" && req.url === "/v1/models") {
+      if (req.method === "GET" && pathname === "/v1/models") {
         await handleModels(res, broker);
         return;
       }
-      if (req.method === "POST" && req.url === "/v1/chat/completions") {
-        await handleChatCompletions(req, res, config, broker);
+      if (pathname.startsWith("/v1/")) {
+        await handleProxiedRequest(req, res, broker, pathname.slice(3) + search);
         return;
       }
       res.writeHead(404, { "content-type": "application/json" });
@@ -85,32 +92,26 @@ async function getModelList(broker) {
     return modelListCache.models;
   }
   const credentials = await broker.getCredentials();
-  const res = await fetch(`${credentials.baseUrl}/inference/v1/model/info`, {
-    headers: {
-      authorization: `Bearer ${credentials.token}`,
-      "x-instance-id": credentials.instanceId,
-      "x-team-id": credentials.teamId,
-    },
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch model list: HTTP ${res.status}`);
+  const upstreamRes = await forwardToUpstream(credentials, "GET", "/model/info", {}, null);
+  if (!upstreamRes.ok) {
+    throw new Error(`Failed to fetch model list: HTTP ${upstreamRes.status}`);
   }
-  const json = await res.json();
+  const json = await upstreamRes.json();
   const models = (json.data || []).map((m) => m.model_name).filter(Boolean);
   modelListCache = { models, expiresAt: Date.now() + MODEL_LIST_CACHE_TTL_MS };
   return models;
 }
 
-async function handleChatCompletions(req, res, config, broker) {
+async function handleProxiedRequest(req, res, broker, upstreamPath) {
   const reqBodyBuffer = await readBody(req);
 
   let credentials = await broker.getCredentials();
-  let upstreamRes = await forwardToUpstream(credentials, reqBodyBuffer);
+  let upstreamRes = await forwardToUpstream(credentials, req.method, upstreamPath, req.headers, reqBodyBuffer);
 
   if (upstreamRes.status === 401) {
     broker.invalidate();
     credentials = await broker.getCredentials();
-    upstreamRes = await forwardToUpstream(credentials, reqBodyBuffer);
+    upstreamRes = await forwardToUpstream(credentials, req.method, upstreamPath, req.headers, reqBodyBuffer);
   }
 
   const resHeaders = {};
@@ -127,17 +128,21 @@ async function handleChatCompletions(req, res, config, broker) {
   Readable.fromWeb(upstreamRes.body).pipe(res);
 }
 
-async function forwardToUpstream(credentials, reqBodyBuffer) {
-  const url = `${credentials.baseUrl}/inference/v1/chat/completions`;
+async function forwardToUpstream(credentials, method, upstreamPath, reqHeaders, bodyBuffer) {
+  const url = `${credentials.baseUrl}/inference/v1${upstreamPath}`;
+  const headers = {};
+  for (const [key, value] of Object.entries(reqHeaders)) {
+    if (HOP_BY_HOP_HEADERS.has(key)) continue;
+    headers[key] = value;
+  }
+  headers.authorization = `Bearer ${credentials.token}`;
+  headers["x-instance-id"] = credentials.instanceId;
+  headers["x-team-id"] = credentials.teamId;
+
   return fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${credentials.token}`,
-      "x-instance-id": credentials.instanceId,
-      "x-team-id": credentials.teamId,
-    },
-    body: reqBodyBuffer,
+    method,
+    headers,
+    body: bodyBuffer && bodyBuffer.length > 0 ? bodyBuffer : undefined,
   });
 }
 
