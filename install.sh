@@ -5,10 +5,10 @@ set -euo pipefail
 # tarball, the same npm-install-from-a-tarball approach you'd use for any
 # package not on the public npm registry.
 #
-#   curl -fsSL https://raw.githubusercontent.com/<owner>/bob-openai-server/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/johntrimble/bob-openai-server/main/install.sh | bash
 #
 # Edit REPO below once this is pushed to its actual GitHub location.
-REPO="REPLACE_ME/bob-openai-server"
+REPO="johntrimble/bob-openai-server"
 
 if ! command -v node >/dev/null 2>&1; then
   echo "error: node is required (>=18) and was not found on PATH." >&2
